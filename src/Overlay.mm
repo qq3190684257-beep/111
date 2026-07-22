@@ -29,6 +29,41 @@ static const CFTimeInterval kProbeMaximumDuration = 90.0;
 - (void)appendProbeSampleAtTimestamp:(CFTimeInterval)timestamp;
 @end
 
+// The overlay is intentionally a non-key transparent window so it never steals
+// game input.  UIKit document pickers must be presented by the game's real
+// window/controller, not by that overlay window.
+static UIViewController* PoolFindGamePresenter(PoolOverlayView* overlay) {
+    UIApplication* app = UIApplication.sharedApplication;
+    UIWindow* selected = nil;
+    UIWindow* normalFallback = nil;
+    if (@available(iOS 13.0, *)) {
+        for (UIScene* scene in app.connectedScenes) {
+            if (![scene isKindOfClass:UIWindowScene.class]) continue;
+            for (UIWindow* candidate in ((UIWindowScene*)scene).windows) {
+                if (candidate == overlay.window || candidate.hidden || candidate.alpha <= 0.0 ||
+                    !candidate.rootViewController) continue;
+                if (candidate.isKeyWindow) { selected = candidate; break; }
+                if (!normalFallback && candidate.windowLevel == UIWindowLevelNormal)
+                    normalFallback = candidate;
+            }
+            if (selected) break;
+        }
+    } else {
+        for (UIWindow* candidate in app.windows) {
+            if (candidate == overlay.window || candidate.hidden || candidate.alpha <= 0.0 ||
+                !candidate.rootViewController) continue;
+            if (candidate.isKeyWindow) { selected = candidate; break; }
+            if (!normalFallback && candidate.windowLevel == UIWindowLevelNormal)
+                normalFallback = candidate;
+        }
+    }
+    if (!selected) selected = normalFallback;
+    UIViewController* presenter = selected.rootViewController;
+    while (presenter.presentedViewController && !presenter.presentedViewController.isBeingDismissed)
+        presenter = presenter.presentedViewController;
+    return presenter;
+}
+
 @interface PoolDisplayLinkProxy : NSObject
 @property(nonatomic, weak) PoolOverlayView* target;
 - (void)onDisplayLink:(CADisplayLink*)displayLink;
@@ -1158,10 +1193,16 @@ static const CFTimeInterval kProbeMaximumDuration = 90.0;
                                                                         inMode:UIDocumentPickerModeExportToService];
             }
             picker.allowsMultipleSelection = YES;
-            picker.popoverPresentationController.sourceView = strongSelf->_exportButton;
-            picker.popoverPresentationController.sourceRect = strongSelf->_exportButton.bounds;
-            UIViewController* presenter = strongSelf.window.rootViewController;
-            while (presenter.presentedViewController) presenter = presenter.presentedViewController;
+            UIPopoverPresentationController* popover = picker.popoverPresentationController;
+            if (popover) {
+                popover.sourceView = strongSelf->_exportButton;
+                popover.sourceRect = strongSelf->_exportButton.bounds;
+            }
+            UIViewController* presenter = PoolFindGamePresenter(strongSelf);
+            if (!presenter || !presenter.viewIfLoaded.window) {
+                strongSelf->_logStatusLabel.text = @"日志：找不到游戏窗口，请回到桌面后重试";
+                return;
+            }
             [presenter presentViewController:picker animated:YES completion:nil];
             strongSelf->_logStatusLabel.text = @"日志：已打开文件导出";
         });

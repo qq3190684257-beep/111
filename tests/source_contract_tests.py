@@ -27,6 +27,11 @@ def main() -> None:
     assert "plugin_version=0.1.0-match-probe-no-yellow" in OVERLAY
     assert "replica_object_count" in OVERLAY
     assert "NativeTrajectoryCopyProbeSnapshot" in OVERLAY
+    assert "PoolFindGamePresenter" in OVERLAY
+    assert "presenter.viewIfLoaded.window" in OVERLAY
+    assert "strongSelf.window.rootViewController" not in OVERLAY
+    assert "fillLocalPocketModel" in BRIDGE
+    assert "localCenters" in BRIDGE
     assert "usedFixedFallback" in BRIDGE
     assert "usedFixedFallback" in BRIDGE_HEADER
     assert "-1.3335f" in BRIDGE_HEADER

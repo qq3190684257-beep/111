@@ -671,10 +671,35 @@ struct IL2CPPBridge::Impl {
         if (!std::isfinite(scale) || std::fabs(scale) < kEpsilon) scale = 1.0f;
         if (fullWidth > 0.1f && fullWidth < 100.0f &&
             fullHeight > 0.1f && fullHeight < 100.0f) {
-            snapshot.tableBounds = boundsFromFullDimensions(
+            const Bounds2 candidate = boundsFromFullDimensions(
                 {fullWidth, fullHeight}, scale, offset);
-            snapshot.physicsConfig.coordinateBoundsReady = snapshot.tableBounds.valid();
-            snapshot.physicsReady = snapshot.physicsConfig.coordinateBoundsReady;
+            // Ranked/match scenes sometimes leave PhysicsCoordinate populated
+            // with a camera/UI-space rectangle.  It is numerically valid but
+            // not the play-field rectangle, which makes the projected route
+            // run through the rail and out of the table.  Accept native values
+            // only when they match the calibrated 8-ball table footprint.
+            constexpr float kReferenceWidth = 2.6670f;
+            constexpr float kReferenceHeight = 1.3335f;
+            constexpr Vec2 kReferenceCenter{0.0f, -0.1296296f};
+            if (candidate.valid()) {
+                const float width = candidate.max.x - candidate.min.x;
+                const float height = candidate.max.y - candidate.min.y;
+                const Vec2 center{(candidate.min.x + candidate.max.x) * 0.5f,
+                                  (candidate.min.y + candidate.max.y) * 0.5f};
+                const bool footprintOk =
+                    std::fabs(width - kReferenceWidth) <= 0.20f &&
+                    std::fabs(height - kReferenceHeight) <= 0.16f &&
+                    std::fabs(center.x - kReferenceCenter.x) <= 0.20f &&
+                    std::fabs(center.y - kReferenceCenter.y) <= 0.20f;
+                if (footprintOk) {
+                    snapshot.tableBounds = candidate;
+                    snapshot.physicsConfig.coordinateBoundsReady = true;
+                    snapshot.physicsReady = true;
+                } else {
+                    snapshot.physicsConfig.coordinateBoundsReady = false;
+                    snapshot.physicsConfig.usedFixedFallback = true;
+                }
+            }
         }
         if (radius > 0.001f && radius < 10.0f) snapshot.ballRadius = radius;
         else snapshot.ballRadius = 0.04123377f * std::fabs(scale);
@@ -1465,6 +1490,25 @@ struct IL2CPPBridge::Impl {
         snapshot.physicsConfig.usedPocketFallback = true;
     }
 
+    void fillLocalPocketModel(RuntimeSnapshot& snapshot, float tableZ) const {
+        if (!snapshot.tableBounds.valid()) return;
+        const float midX = (snapshot.tableBounds.min.x + snapshot.tableBounds.max.x) * 0.5f;
+        const std::array<Vec2, 6> localCenters{{
+            {snapshot.tableBounds.min.x, snapshot.tableBounds.min.y},
+            {midX, snapshot.tableBounds.min.y},
+            {snapshot.tableBounds.max.x, snapshot.tableBounds.min.y},
+            {snapshot.tableBounds.min.x, snapshot.tableBounds.max.y},
+            {midX, snapshot.tableBounds.max.y},
+            {snapshot.tableBounds.max.x, snapshot.tableBounds.max.y}
+        }};
+        for (std::size_t i = 0; i < localCenters.size(); ++i) {
+            if (snapshot.pockets[i].visible) continue;
+            snapshot.pockets[i].world = {localCenters[i].x, localCenters[i].y, tableZ};
+            snapshot.pockets[i].visible = true;
+        }
+        snapshot.physicsConfig.usedFixedFallback = true;
+    }
+
     void projectPhysicsBounds(RuntimeSnapshot& snapshot, Il2CppObject* camera,
                               float tableZ) const {
         // Four camera projections are cheap and are also the fixed-table
@@ -1555,6 +1599,10 @@ struct IL2CPPBridge::Impl {
             snapshot.physicsReady = true;
             snapshot.physicsConfig.usedFixedFallback = true;
         }
+        // Match scenes may have no PocketBallUI anchors at all.  Populate the
+        // six standard openings from the local table model so route clipping
+        // and pocket-stop logic still work without scene-specific objects.
+        fillLocalPocketModel(snapshot, tableZ);
         collectProbe(snapshot);
         // shootInfo.xPosList/yPosList are rack/shot snapshots, not live ball
         // positions. Keep them for diagnostics only and never overwrite the
